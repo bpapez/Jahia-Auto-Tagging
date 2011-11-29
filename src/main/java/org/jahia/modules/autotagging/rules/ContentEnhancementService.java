@@ -45,16 +45,20 @@ import org.apache.clerezza.rdf.core.serializedform.Parser;
 import org.apache.clerezza.rdf.core.sparql.ParseException;
 import org.apache.clerezza.rdf.ontologies.RDF;
 import org.apache.commons.lang.StringUtils;
+import org.apache.jackrabbit.core.value.InternalValueFactory;
 import org.apache.stanbol.enhancer.servicesapi.helper.EnhancementEngineHelper;
 import org.drools.spi.KnowledgeHelper;
 import org.jahia.api.Constants;
+import org.jahia.services.SpringContextSingleton;
 import org.jahia.services.content.JCRNodeWrapper;
+import org.jahia.services.content.decorator.JCRFileContent;
 import org.jahia.services.content.decorator.JCRSiteNode;
 import org.jahia.services.content.nodetypes.ExtendedPropertyDefinition;
 import org.jahia.services.content.nodetypes.SelectorType;
 import org.jahia.services.content.rules.AddedNodeFact;
 import org.jahia.services.notification.HttpClientService;
 import org.jahia.services.tags.TaggingService;
+import org.jahia.services.textextraction.TextExtractionService;
 import org.slf4j.Logger;
 
 public class ContentEnhancementService {
@@ -103,57 +107,84 @@ public class ContentEnhancementService {
 
         final JCRNodeWrapper node = nodeFact.getNode();
         JCRSiteNode site = node.getResolveSite();
-        if (site != null) {
-            final String siteKey = site.getSiteKey();
-            PropertyIterator it = node.getProperties();
-            StringBuilder data = new StringBuilder();
-            while (it.hasNext()) {
-                Property property = (Property) it.next();
-                if (property.getType() == PropertyType.STRING) {
-                    ExtendedPropertyDefinition propDef = (ExtendedPropertyDefinition) property.getDefinition();
-                    if (propDef.getSelector() == SelectorType.RICHTEXT) {
+
+        final String siteKey = site != null ? site.getName() : "systemsite";
+        PropertyIterator it = node.getProperties();
+        StringBuilder data = new StringBuilder();
+        while (it.hasNext()) {
+            Property property = (Property) it.next();
+            if (property.getType() == PropertyType.STRING || property.getType() == PropertyType.REFERENCE
+                    || property.getType() == PropertyType.WEAKREFERENCE) {
+                ExtendedPropertyDefinition propDef = (ExtendedPropertyDefinition) property.getDefinition();
+                String value = null;
+                if (!propDef.isHidden() && !propDef.isProtected() && propDef.isFullTextSearchable()) {
+                    if (propDef.getSelector() == SelectorType.SMALLTEXT) {
+                        value = property.getString();
+                    } else if (propDef.getSelector() == SelectorType.RICHTEXT) {
                         if (data.length() != 0) {
                             data.append('\n');
                         }
-                        data.append(property.getString());
+
+                        try {
+                            TextExtractionService textExtractor = (TextExtractionService) SpringContextSingleton
+                                    .getBean("org.jahia.services.textextraction.TextExtractionService");
+                            value = textExtractor.parse(
+                                    new ByteArrayInputStream(((String) property.getString())
+                                            .getBytes(InternalValueFactory.DEFAULT_ENCODING)), "text/html");
+                        } catch (Exception e) {
+                            logger.warn("Unable to parse description", e);
+                        }
+                    } else if (propDef.getSelector() == SelectorType.CONTENTPICKER || propDef.getSelector() == SelectorType.FILEUPLOAD) {
+                        JCRNodeWrapper fileNode = (JCRNodeWrapper) property.getNode();
+                        if (fileNode != null && fileNode.isFile()) {
+                            JCRFileContent fileContent = fileNode.getFileContent();
+                            if (fileContent != null) {
+                                value = fileContent.getExtractedText();
+                            }
+                        }
                     }
+                }
+                if (value != null) {
+                    if (data.length() != 0) {
+                        data.append('\n');
+                    }
+                    data.append(value);
                 }
             }
-            if (data.length() != 0) {
-                Map<String, String> parameters = new HashMap<String, String>();
-                Map<String, String> headers = new HashMap<String, String>();
-                parameters.put("data", data.toString());
-                headers.put("Accept", "application/rdf+xml");
-                headers.put("Content-type", "text/plain");
-                String content = getHttpClientService().executePost(getEnhancementEngineUrl(), parameters, headers);
-                Map<UriRef, Map<String, EntityExtractionSummary>> extractionsByTypeMap = Collections.emptyMap();
-                if (!content.isEmpty()) {
-                    try {
-                        final Parser parser = Parser.getInstance();
-                        Graph deserializedGraph = parser.parse(new ByteArrayInputStream(content.getBytes("UTF-8")), "application/rdf+xml");
+        }
+        if (data.length() != 0) {
+            Map<String, String> parameters = new HashMap<String, String>();
+            Map<String, String> headers = new HashMap<String, String>();
+            parameters.put("content", data.toString());
+            headers.put("Accept", "application/rdf+xml");
+            headers.put("Content-type", "application/x-www-form-urlencoded; charset=UTF-8");
+            String content = getHttpClientService().executePost(getEnhancementEngineUrl(), parameters, headers);
+            Map<UriRef, Map<String, EntityExtractionSummary>> extractionsByTypeMap = Collections.emptyMap();
+            if (!content.isEmpty()) {
+                try {
+                    final Parser parser = Parser.getInstance();
+                    Graph deserializedGraph = parser.parse(new ByteArrayInputStream(content.getBytes("UTF-8")), "application/rdf+xml");
 
-                        extractionsByTypeMap = initOccurrences(deserializedGraph);
-                        node.setProperty("j:performAutoTagging", false);
-                    } catch (Exception e) {
-                        logger.error("Error while parsing enhancement result", e);
-                    }
+                    extractionsByTypeMap = initOccurrences(deserializedGraph);
+                    node.setProperty("j:performAutoTagging", false);
+                } catch (Exception e) {
+                    logger.error("Error while parsing enhancement result", e);
                 }
-
-                Set<String> tags = new HashSet<String>();
-                for (Map<String, EntityExtractionSummary> extractions : extractionsByTypeMap.values()) {
-                    for (EntityExtractionSummary entity : extractions.values()) {
-
-                        tags.add(entity.getName());
-                    }
-                }
-                if (!tags.isEmpty()) {
-                    if (!node.isNodeType(Constants.JAHIAMIX_TAGGED)) {
-                        node.addMixin(Constants.JAHIAMIX_TAGGED);
-                    }
-                    taggingService.tag(node.getPath(), StringUtils.join(tags, ","), siteKey, true, node.getSession());
-                }
-
             }
+
+            Set<String> tags = new HashSet<String>();
+            for (Map<String, EntityExtractionSummary> extractions : extractionsByTypeMap.values()) {
+                for (EntityExtractionSummary entity : extractions.values()) {
+                    tags.add(entity.getName());
+                }
+            }
+            if (!tags.isEmpty()) {
+                if (!node.isNodeType(Constants.JAHIAMIX_TAGGED)) {
+                    node.addMixin(Constants.JAHIAMIX_TAGGED);
+                }
+                taggingService.tag(node.getPath(), StringUtils.join(tags, ","), siteKey, true, node.getSession());
+            }
+
         }
     }
 
