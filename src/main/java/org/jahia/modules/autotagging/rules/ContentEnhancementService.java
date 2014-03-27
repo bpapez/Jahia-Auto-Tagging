@@ -47,7 +47,7 @@ import org.apache.clerezza.rdf.ontologies.RDF;
 import org.apache.commons.lang.StringUtils;
 import org.apache.jackrabbit.core.value.InternalValueFactory;
 import org.apache.stanbol.enhancer.servicesapi.helper.EnhancementEngineHelper;
-import org.drools.spi.KnowledgeHelper;
+import org.drools.core.spi.KnowledgeHelper;
 import org.jahia.api.Constants;
 import org.jahia.services.SpringContextSingleton;
 import org.jahia.services.content.JCRNodeWrapper;
