@@ -1,0 +1,26 @@
+###############################################################################
+package org.jahia.modules.autotagging.rules
+
+#list any import classes here.
+import org.jahia.services.content.rules.*
+import org.jahia.services.content.JCRContentUtils
+import org.slf4j.Logger
+
+expander rules.dsl
+
+#declare any global variables here
+global User user
+global Service service
+global Logger logger
+global JCRContentUtils jcrUtils
+global ContentEnhancementService contentEnhancementService
+###############################################################################
+
+rule "Perform auto tagging"
+    when
+        A property j:performAutoTagging has been set on a node
+            - the value is 'true'
+    then
+        Log "Perform auto tagging for node " + node.getPath()
+        Perform auto tagging for a node
+end

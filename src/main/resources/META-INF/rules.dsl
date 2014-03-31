@@ -1,0 +1,1 @@
+[consequence][]Perform auto tagging for a {node}=contentEnhancementService.performAutoTagging({node}, drools);
